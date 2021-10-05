@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+metadata:
+  name: {{ include "kube-muppet.fullname" . }}
+  labels:
+    {{- include "kube-muppet.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "kube-muppet.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "kube-muppet.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "kube-muppet.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      serviceAccountName: {{ include "kube-muppet.serviceAccountName" . }}
+      initContainers:
+        - name: {{ .Chart.Name }}-autosign
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          command: ["sh", "-c"]
+          args:
+            - "psk=$(cat /run/secrets/autosign_psk); hostname=$(puppet config print certname | tr -d '\n'); echo \"custom_attributes:\n  1.2.840.113549.1.9.7: 'hashed;$(echo -n $psk/$hostname/kube-muppet/production | openssl dgst -binary -sha256 | openssl base64)'\nextension_requests:\n  pp_role: 'kube-muppet'\n  pp_environment: 'production'\" > /etc/puppetlabs/puppet/csr_attributes.yaml; puppet ssl submit_request --environment production --server $PUPPET_SERVER --serverport $PUPPET_PORT --ca_server $PUPPET_CA_SERVER --ca_port $PUPPET_CA_PORT --certificate_revocation=false --waitforcert 60 --confdir /etc/puppetlabs/puppet"
+          env:
+            - name: PUPPET_SERVER
+              value: {{ .Values.puppet.server | quote }}
+            - name: PUPPET_PORT
+              value: {{ .Values.puppet.port | quote }}
+            - name: PUPPET_CA_SERVER
+              value: {{ .Values.puppet.ca_server | default .Values.puppet.server | quote }}
+            - name: PUPPET_CA_PORT
+              value: {{ .Values.puppet.ca_port | default .Values.puppet.port | quote }}
+          volumeMounts:
+            - mountPath: /run/secrets/autosign_psk
+              name: secrets
+              subPath: autosign_psk
+            - mountPath: /etc/puppetlabs
+              name: etc
+              subPath: puppetlabs
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - while [ 1 ]; do puppet facts upload --environment production --server $PUPPET_SERVER --serverport $PUPPET_PORT --ca_server $PUPPET_CA_SERVER --ca_port $PUPPET_CA_PORT --certificate_revocation=false; sleep 1800; done
+          env:
+            - name: PUPPET_SERVER
+              value: {{ .Values.puppet.server | quote }}
+            - name: PUPPET_PORT
+              value: {{ .Values.puppet.port | quote }}
+            - name: PUPPET_CA_SERVER
+              value: {{ .Values.puppet.ca_server | default .Values.puppet.server | quote }}
+            - name: PUPPET_CA_PORT
+              value: {{ .Values.puppet.ca_port | default .Values.puppet.port | quote }}
+          volumeMounts:
+            - mountPath: /opt/puppetlabs/puppet/cache/lib/facter
+              name: facterlib
+            - mountPath: /var/run/docker.sock
+              name: dockersock
+            - mountPath: /etc
+              name: etc
+            - mountPath: /usr/lib/os-release
+              name: osrelease
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: secrets
+          secret:
+            secretName: {{ include "kube-muppet.fullname" . }}
+        - name: etc
+          hostPath:
+            path: /etc
+            type: Directory
+        - name: osrelease
+          hostPath:
+            path: /usr/lib/os-release
+            type: Directory
+        - name: dockersock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Directory
+        - name: facterlib
+          hostPath:
+            path: /opt/puppetlabs/puppet/cache/lib/facter
+            type: Directory
